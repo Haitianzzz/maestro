@@ -10,11 +10,13 @@ Spec reference: ``specs/01-data-models.md``.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from maestro.utils.time import utcnow
 
 JudgeTier = Literal["deterministic", "test_based", "llm_judge"]
 SubAgentStatus = Literal["success", "failed", "rejected"]
@@ -30,10 +32,6 @@ def generate_task_id() -> str:
 def generate_subtask_id(task_id: str, index: int) -> str:
     """Generate a subtask id in the canonical ``{task_id}-{index:03d}`` format."""
     return f"{task_id}-{index:03d}"
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +58,7 @@ class TaskSpec(BaseModel):
     judge_samples: int = Field(default=3, ge=1)
     judge_disagreement_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     auto_gen_tests: bool = False
-    created_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +163,7 @@ class SubAgentResult(BaseModel):
     latency_ms: int = Field(ge=0)
     model_used: str
 
-    created_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
