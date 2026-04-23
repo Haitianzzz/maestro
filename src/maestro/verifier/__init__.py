@@ -14,9 +14,11 @@ scheduler can use :class:`DeterministicVerifier` directly as a
 """
 
 from .deterministic import DeterministicVerifier, SubprocessResult, run_subprocess
+from .test_based import TestBasedVerifier
 
 __all__ = [
     "DeterministicVerifier",
     "SubprocessResult",
+    "TestBasedVerifier",
     "run_subprocess",
 ]
