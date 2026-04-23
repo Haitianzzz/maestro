@@ -240,7 +240,51 @@ def test_report_renders_persisted_result(runner: CliRunner, sample_repo: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_bench_stub_exits_with_message(runner: CliRunner) -> None:
-    result = runner.invoke(app, ["bench", "--dry-run"])
+def test_bench_rejects_unknown_ablation(
+    runner: CliRunner, sample_repo: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "bench",
+            "--ablation",
+            "no_such_config",
+            "--task-set",
+            str(sample_repo),  # dir exists but has no task.json
+            "--output",
+            str(tmp_path / "out"),
+            "--dry-run",
+        ],
+    )
     assert result.exit_code == 5
-    assert "module-15" in result.stdout or "not yet implemented" in result.stdout
+    assert "Unknown" in result.stdout
+
+
+def test_bench_dry_run_on_fixture_set_succeeds(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI wires through to the harness and writes the report artifacts."""
+    import shutil
+
+    task_set = tmp_path / "tasks"
+    fixture = Path(__file__).parent.parent / "fixtures" / "bench_tiny"
+    shutil.copytree(fixture, task_set)
+    monkeypatch.delenv("MAESTRO_CONFIG", raising=False)
+
+    out = tmp_path / "results"
+    result = runner.invoke(
+        app,
+        [
+            "bench",
+            "--task-set",
+            str(task_set),
+            "--output",
+            str(out),
+            "--ablation",
+            "baseline",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert (out / "baseline.json").exists()
+    assert (out / "baseline.md").exists()

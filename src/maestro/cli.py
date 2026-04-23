@@ -270,17 +270,47 @@ def bench(
         Path("benchmark/results/"), "--output", help="Where to write results"
     ),
     ablation: str = typer.Option("full", "--ablation"),
-    parallel_tasks: int = typer.Option(1, "--parallel-tasks"),
+    parallel_tasks: int = typer.Option(
+        1, "--parallel-tasks", help="Cross-task parallelism (reserved; default 1)"
+    ),
     limit: int | None = typer.Option(None, "--limit"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Run the benchmark suite (wiring lives in module 15)."""
-    del task_set, output, ablation, parallel_tasks, limit, dry_run
-    console.print(
-        "[yellow]`maestro bench` dispatches to the module-15 harness, "
-        "which is not yet implemented.[/yellow]"
+    """Run the benchmark suite under one ablation config."""
+    del parallel_tasks  # reserved for spec 09 §6 follow-up
+    from maestro.benchmark.configs import all_config_names, get_config
+    from maestro.benchmark.harness import BenchmarkHarness
+
+    try:
+        get_config(ablation)
+    except KeyError as exc:
+        console.print(f"[red]Unknown --ablation '{ablation}'.[/red] Known: {all_config_names()}")
+        raise typer.Exit(code=5) from exc
+
+    try:
+        cfg = _load_config_for_run(dry_run)
+    except LLMConfigError as exc:
+        console.print(f"[red]Config error:[/red] {exc}")
+        raise typer.Exit(code=5) from exc
+
+    harness = BenchmarkHarness(
+        task_set_dir=task_set,
+        output_dir=output,
+        config_name=ablation,
+        llm_config=cfg,
+        dry_run=dry_run,
     )
-    raise typer.Exit(code=5)
+    report = asyncio.run(harness.run_all(limit=limit))
+    console.print(
+        Panel(
+            f"[green]{report.config_name}[/green]: "
+            f"resolve={report.resolve_rate:.1%}  "
+            f"avg_cost={report.avg_cost:.4f}  "
+            f"tasks={report.task_count}",
+            title="Benchmark run",
+            expand=False,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,13 @@
+{
+  "task_id": "task-001",
+  "repo": "fake/tiny",
+  "pr_url": "",
+  "issue_url": "",
+  "description": "Fix double() so it actually multiplies by two.",
+  "natural_language_prompt": "A helper called double(x) is supposed to return x multiplied by two, but it currently returns x plus two. Fix it.",
+  "failing_tests": ["tests/test_app.py"],
+  "expected_modified_files": ["src/app.py"],
+  "files_hint": ["src/app.py"],
+  "difficulty": "easy",
+  "source_commit": ""
+}
