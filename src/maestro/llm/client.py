@@ -69,6 +69,39 @@ class LLMCallMetadata(BaseModel):
     http_retry_count: int = Field(ge=0)
 
 
+class ToolCallRequest(BaseModel):
+    """A single tool invocation requested by the model.
+
+    Arguments are the parsed JSON object already decoded from the raw
+    ``arguments`` string returned by the provider. If the provider emits an
+    unparseable argument blob we still surface the raw text via
+    ``arguments_raw`` so the caller can decide how to handle it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments_raw: str = ""
+
+
+class ToolCallResponse(BaseModel):
+    """Combined text + tool-call output from :meth:`LLMClient.call_with_tools`.
+
+    Exactly one of ``text`` (free-form reply, no tool call) or
+    ``tool_calls`` (at least one tool invocation) will typically be
+    populated, mirroring OpenAI-style completions. Both may be non-empty
+    when the model narrates before dispatching tools.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = ""
+    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
+    finish_reason: str | None = None
+
+
 class ModelCostSummary(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -195,10 +228,6 @@ class LLMClient:
 
     Wrap all OpenAI-compatible calls. Business modules MUST use this class;
     they must never import ``openai`` directly.
-
-    NOTE(M1): tool-calling (``call_with_tools``) is declared but intentionally
-    not implemented in this module. The sub-agent Explore phase (spec 05 §4.1)
-    needs it, and we fill in the body when module 8 (subagent) is built.
     """
 
     def __init__(
@@ -291,20 +320,30 @@ class LLMClient:
         tool_choice: str = "auto",
         temperature: float = 0.2,
         max_tokens: int | None = None,
-    ) -> Any:
-        """Call the LLM with function-calling tools enabled.
+    ) -> tuple[ToolCallResponse, LLMCallMetadata]:
+        """Call the LLM with OpenAI-style function-calling tools enabled.
 
-        TODO(M1): implement when module 8 (subagent) is built. Sub-agent's
-        Explore phase (spec 05 §4.1) uses this to dispatch ``read_file`` tool
-        calls. The concrete return type will be a structured Pydantic
-        ``ToolCallResponse``; leaving it as ``Any`` here to avoid shipping a
-        schema that gets rewritten during module 8.
+        The sub-agent's Explore phase (spec 05 §4.1) uses this to dispatch
+        ``read_file`` tool calls. The response carries any free-form text
+        AND the list of tool invocations the model wants to make; the
+        caller is responsible for executing them and feeding results back
+        via follow-up messages.
         """
-        del role, messages, tools, tool_choice, temperature, max_tokens  # unused
-        raise NotImplementedError(
-            "LLMClient.call_with_tools will be implemented in module 8 (subagent). "
-            "See spec 05 §4.1 and the M1 decision."
-        )
+        model_cfg = self._config.get_model(role)
+
+        if self._dry_run:
+            return self._dry_run_tool_call(role, model_cfg)
+
+        async with self._semaphore:
+            return await self._do_call_with_tools(
+                role=role,
+                model_cfg=model_cfg,
+                messages=list(messages),
+                tools=tools,
+                tool_choice=tool_choice,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
     async def get_cost_report(self) -> CostReport:
         """Return a snapshot cost report aggregated across all recorded calls."""
@@ -341,7 +380,7 @@ class LLMClient:
         last_parse_error: Exception | None = None
 
         while parse_attempts < 2:  # one parse retry on validation failure
-            raw_text, metadata = await self._send(
+            raw_text, _tool_calls, _finish, metadata = await self._send(
                 role=role,
                 model_cfg=model_cfg,
                 messages=messages,
@@ -401,7 +440,7 @@ class LLMClient:
         temperature: float,
         max_tokens: int | None,
     ) -> tuple[str, LLMCallMetadata]:
-        raw_text, metadata = await self._send(
+        raw_text, _tool_calls, _finish, metadata = await self._send(
             role=role,
             model_cfg=model_cfg,
             messages=messages,
@@ -412,6 +451,33 @@ class LLMClient:
         await self._record(metadata)
         return raw_text, metadata
 
+    async def _do_call_with_tools(
+        self,
+        *,
+        role: Role,
+        model_cfg: ModelConfig,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> tuple[ToolCallResponse, LLMCallMetadata]:
+        text, tool_calls, finish_reason, metadata = await self._send(
+            role=role,
+            model_cfg=model_cfg,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=None,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        await self._record(metadata)
+        return (
+            ToolCallResponse(text=text, tool_calls=tool_calls, finish_reason=finish_reason),
+            metadata,
+        )
+
     async def _send(
         self,
         *,
@@ -421,7 +487,9 @@ class LLMClient:
         temperature: float,
         max_tokens: int | None,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str, LLMCallMetadata]:
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> tuple[str, list[ToolCallRequest], str | None, LLMCallMetadata]:
         """Low-level send with exponential backoff on retriable errors."""
         max_retries = self._config.max_retries
         attempt = 0
@@ -438,6 +506,10 @@ class LLMClient:
                 }
                 if response_format is not None:
                     kwargs["response_format"] = response_format
+                if tools is not None:
+                    kwargs["tools"] = tools
+                    if tool_choice is not None:
+                        kwargs["tool_choice"] = tool_choice
 
                 response = await self._client.chat.completions.create(**kwargs)
             except Exception as exc:
@@ -471,7 +543,7 @@ class LLMClient:
                 ) from exc
 
             latency_ms = int((time.perf_counter() - start) * 1000)
-            text, tokens_in, tokens_out = _extract_response(response)
+            text, tool_calls, finish_reason, tokens_in, tokens_out = _extract_response(response)
             cost = _compute_cost(model_cfg, tokens_in, tokens_out)
             metadata = LLMCallMetadata(
                 model_name=model_cfg.name,
@@ -495,8 +567,9 @@ class LLMClient:
                 cost=cost,
                 currency=self._config.currency,
                 http_retry_count=attempt,
+                tool_calls=len(tool_calls),
             )
-            return text, metadata
+            return text, tool_calls, finish_reason, metadata
 
         raise LLMRetryExhaustedError(
             f"Exhausted {max_retries} retries for role={role} model={model_cfg.name}",
@@ -517,6 +590,13 @@ class LLMClient:
     def _dry_run_text(self, role: Role, model_cfg: ModelConfig) -> tuple[str, LLMCallMetadata]:
         metadata = self._dry_run_metadata(role, model_cfg)
         return "dummy text", metadata
+
+    def _dry_run_tool_call(
+        self, role: Role, model_cfg: ModelConfig
+    ) -> tuple[ToolCallResponse, LLMCallMetadata]:
+        """Return a dummy tool-call response (no tool calls, empty text)."""
+        metadata = self._dry_run_metadata(role, model_cfg)
+        return ToolCallResponse(text="", tool_calls=[], finish_reason="stop"), metadata
 
     def _dry_run_metadata(self, role: Role, model_cfg: ModelConfig) -> LLMCallMetadata:
         return LLMCallMetadata(
@@ -545,15 +625,51 @@ def _backoff_delay(attempt: int) -> float:
     return float(base * jitter)
 
 
-def _extract_response(response: Any) -> tuple[str, int, int]:
-    """Extract text content and token counts from an OpenAI-style response."""
+def _extract_response(
+    response: Any,
+) -> tuple[str, list[ToolCallRequest], str | None, int, int]:
+    """Extract text, tool calls, finish_reason, and token counts.
+
+    Robust to tool-free responses (``message.tool_calls`` absent or None) and
+    to providers that return ``arguments`` as an already-decoded object
+    instead of a JSON string.
+    """
     choice = response.choices[0]
     message = choice.message
     text = message.content or ""
+    finish_reason = getattr(choice, "finish_reason", None)
+
+    tool_calls: list[ToolCallRequest] = []
+    raw_tool_calls = getattr(message, "tool_calls", None) or []
+    for tc in raw_tool_calls:
+        call_id = getattr(tc, "id", None) or ""
+        function = getattr(tc, "function", None)
+        name = getattr(function, "name", None) or ""
+        raw_args = getattr(function, "arguments", "") or ""
+        parsed_args: dict[str, Any]
+        if isinstance(raw_args, dict):
+            parsed_args = raw_args
+            raw_args_str = json.dumps(raw_args)
+        else:
+            raw_args_str = str(raw_args)
+            try:
+                decoded = json.loads(raw_args_str) if raw_args_str else {}
+                parsed_args = decoded if isinstance(decoded, dict) else {}
+            except json.JSONDecodeError:
+                parsed_args = {}
+        tool_calls.append(
+            ToolCallRequest(
+                call_id=call_id,
+                name=name,
+                arguments=parsed_args,
+                arguments_raw=raw_args_str,
+            )
+        )
+
     usage = getattr(response, "usage", None)
     tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
     tokens_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
-    return text, tokens_in, tokens_out
+    return text, tool_calls, finish_reason, tokens_in, tokens_out
 
 
 def _build_cost_report(records: Iterable[LLMCallMetadata], *, currency: str) -> CostReport:
