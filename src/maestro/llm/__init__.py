@@ -1,6 +1,13 @@
 """Maestro LLM client package (spec 02)."""
 
-from .client import CostReport, LLMCallMetadata, LLMClient, ModelCostSummary
+from .client import (
+    CostReport,
+    LLMCallMetadata,
+    LLMClient,
+    ModelCostSummary,
+    ToolCallRequest,
+    ToolCallResponse,
+)
 from .config import ClientConfig, Currency, ModelConfig, Role, load_config
 from .errors import (
     LLMCallError,
@@ -22,5 +29,7 @@ __all__ = [
     "ModelConfig",
     "ModelCostSummary",
     "Role",
+    "ToolCallRequest",
+    "ToolCallResponse",
     "load_config",
 ]

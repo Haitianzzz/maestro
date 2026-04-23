@@ -1,8 +1,4 @@
-"""Maestro scheduler package (spec 04).
-
-Only the DAG primitives are wired up at this module layer. The live
-``Scheduler`` class (spec 04 §3) is built in module 9.
-"""
+"""Maestro scheduler package (spec 04)."""
 
 from .dag import (
     DAGError,
@@ -10,9 +6,12 @@ from .dag import (
     detect_write_conflicts,
     topological_batches,
 )
+from .scheduler import Scheduler, VerifierProtocol
 
 __all__ = [
     "DAGError",
+    "Scheduler",
+    "VerifierProtocol",
     "defer_lower_priority_on_conflicts",
     "detect_write_conflicts",
     "topological_batches",

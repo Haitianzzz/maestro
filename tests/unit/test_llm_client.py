@@ -323,18 +323,150 @@ async def test_call_text_returns_plain_string() -> None:
 
 
 # ---------------------------------------------------------------------------
-# call_with_tools stub (M1)
+# call_with_tools (M1)
 # ---------------------------------------------------------------------------
 
 
-async def test_call_with_tools_is_not_implemented() -> None:
-    client = LLMClient(_make_config(), now=_fixed_now)
-    with pytest.raises(NotImplementedError, match="module 8"):
-        await client.call_with_tools(
-            role="subagent",
-            messages=[],
-            tools=[],
+def _mock_tool_response(
+    *,
+    content: str | None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    finish_reason: str = "tool_calls",
+    prompt_tokens: int = 120,
+    completion_tokens: int = 40,
+) -> Any:
+    response = MagicMock()
+    response.choices = [MagicMock()]
+    response.choices[0].message = MagicMock()
+    response.choices[0].message.content = content
+
+    if tool_calls is None:
+        response.choices[0].message.tool_calls = None
+    else:
+        calls: list[Any] = []
+        for tc in tool_calls:
+            m = MagicMock()
+            m.id = tc["id"]
+            m.function = MagicMock()
+            m.function.name = tc["name"]
+            m.function.arguments = tc["arguments"]
+            calls.append(m)
+        response.choices[0].message.tool_calls = calls
+
+    response.choices[0].finish_reason = finish_reason
+    response.usage = MagicMock()
+    response.usage.prompt_tokens = prompt_tokens
+    response.usage.completion_tokens = completion_tokens
+    return response
+
+
+async def test_call_with_tools_parses_tool_calls() -> None:
+    cfg = _make_config()
+    client = LLMClient(cfg, now=_fixed_now)
+
+    async def handler(**_: Any) -> Any:
+        return _mock_tool_response(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "name": "read_file",
+                    "arguments": '{"path": "src/app.py"}',
+                }
+            ],
+            finish_reason="tool_calls",
         )
+
+    mock = _install_client_mock(client, handler)
+
+    resp, meta = await client.call_with_tools(
+        role="subagent",
+        messages=[{"role": "user", "content": "read the file"}],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+    )
+    assert resp.text == ""
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].call_id == "call_1"
+    assert resp.tool_calls[0].name == "read_file"
+    assert resp.tool_calls[0].arguments == {"path": "src/app.py"}
+    assert resp.finish_reason == "tool_calls"
+    assert meta.role == "subagent"
+    assert mock.call_count == 1
+    # Assert tools + tool_choice were forwarded.
+    forwarded = mock.call_args.kwargs
+    assert forwarded["tools"][0]["function"]["name"] == "read_file"
+    assert forwarded["tool_choice"] == "auto"
+
+
+async def test_call_with_tools_returns_text_when_no_tool_calls() -> None:
+    cfg = _make_config()
+    client = LLMClient(cfg, now=_fixed_now)
+
+    async def handler(**_: Any) -> Any:
+        return _mock_tool_response(
+            content="I have enough context, stopping exploration.",
+            tool_calls=None,
+            finish_reason="stop",
+        )
+
+    _install_client_mock(client, handler)
+    resp, _ = await client.call_with_tools(
+        role="subagent",
+        messages=[{"role": "user", "content": "explore"}],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+    )
+    assert resp.tool_calls == []
+    assert "stopping exploration" in resp.text
+    assert resp.finish_reason == "stop"
+
+
+async def test_call_with_tools_tolerates_unparseable_arguments() -> None:
+    cfg = _make_config()
+    client = LLMClient(cfg, now=_fixed_now)
+
+    async def handler(**_: Any) -> Any:
+        return _mock_tool_response(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "name": "read_file",
+                    "arguments": "this is not json",
+                }
+            ],
+        )
+
+    _install_client_mock(client, handler)
+    resp, _ = await client.call_with_tools(
+        role="subagent",
+        messages=[],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+    )
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].arguments == {}
+    assert resp.tool_calls[0].arguments_raw == "this is not json"
+
+
+async def test_call_with_tools_records_metadata() -> None:
+    cfg = _make_config()
+    client = LLMClient(cfg, now=_fixed_now)
+
+    async def handler(**_: Any) -> Any:
+        return _mock_tool_response(
+            content=None,
+            tool_calls=[{"id": "c", "name": "read_file", "arguments": "{}"}],
+        )
+
+    _install_client_mock(client, handler)
+    _, meta = await client.call_with_tools(
+        role="subagent",
+        messages=[],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+    )
+    report = await client.get_cost_report()
+    assert report.total_calls == 1
+    assert meta.tokens_input == 120
+    assert meta.tokens_output == 40
 
 
 # ---------------------------------------------------------------------------
