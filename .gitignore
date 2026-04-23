@@ -16,3 +16,11 @@ build/
 htmlcov/
 .tox/
 uv.lock.bak
+benchmark/tasks/*/.venv-*/
+# The before/after trees are large (~10 MB each) and fully regenerable
+# by ``benchmark/scripts/swebench_adapter.py``. Keep only task.json +
+# MANIFEST.md in git; reproduce the rest with:
+#   uv run python benchmark/scripts/swebench_adapter.py --clone-cache benchmark/.clone-cache
+benchmark/tasks/*/before/
+benchmark/tasks/*/after/
+benchmark/.clone-cache/
