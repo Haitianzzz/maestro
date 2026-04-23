@@ -1,0 +1,19 @@
+[
+  {
+    "task_id": "task-001",
+    "pr_url": "https://github.com/psf/requests/pull/1234",
+    "failing_tests": ["tests/test_adapters.py::test_custom_adapter_preserved_on_redirect"],
+    "expected_modified_files": ["src/requests/sessions.py"],
+    "files_hint": ["src/requests/sessions.py", "src/requests/adapters.py"],
+    "difficulty": "easy",
+    "description_override": "When a Session follows a redirect, custom adapters registered for the new host are ignored and the default adapter is used instead."
+  },
+  {
+    "task_id": "task-002",
+    "pr_url": "https://github.com/pallets/click/pull/2103",
+    "failing_tests": ["tests/test_basic.py::test_nargs_star_with_default"],
+    "expected_modified_files": ["src/click/core.py"],
+    "difficulty": "medium",
+    "description_override": null
+  }
+]

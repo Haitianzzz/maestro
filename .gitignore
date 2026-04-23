@@ -24,3 +24,7 @@ benchmark/tasks/*/.venv-*/
 benchmark/tasks/*/before/
 benchmark/tasks/*/after/
 benchmark/.clone-cache/
+
+# Editor / IDE / agent local state
+.claude/
+.vscode/
